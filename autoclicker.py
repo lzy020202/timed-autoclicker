@@ -3,11 +3,13 @@ import ctypes.wintypes
 import json
 import os
 import queue
+import socket
+import struct
 import threading
 import time
 import tkinter as tk
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from tkinter import messagebox, ttk
 
@@ -29,13 +31,49 @@ class TimeSource:
         self.name = "系统时间"
 
     def now(self):
-        return datetime.now().astimezone() + timedelta(seconds=self.offset)
+        return datetime.fromtimestamp(time.time() + self.offset, tz=self.tzinfo)
+
+    @property
+    def tzinfo(self):
+        if self.name == "北京时间":
+            return timezone(timedelta(hours=8), name="北京时间")
+        return datetime.now().astimezone().tzinfo
+
+    @staticmethod
+    def _sync_ntp():
+        last_error = None
+        for host in ("ntp.aliyun.com", "ntp1.aliyun.com", "ntp2.aliyun.com"):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(3)
+            try:
+                packet = b"\x1b" + 47 * b"\0"
+                t1 = time.time()
+                sock.sendto(packet, (host, 123))
+                data, _ = sock.recvfrom(512)
+                t4 = time.time()
+                if len(data) < 48:
+                    raise RuntimeError("NTP 响应长度异常")
+                values = struct.unpack("!12I", data[:48])
+                ntp_epoch = 2208988800
+                t2 = values[8] - ntp_epoch + values[9] / 2**32
+                t3 = values[10] - ntp_epoch + values[11] / 2**32
+                return ((t2 - t1) + (t3 - t4)) / 2
+            except (OSError, RuntimeError) as exc:
+                last_error = exc
+            finally:
+                sock.close()
+        raise RuntimeError(f"北京时间服务器连接失败：{last_error}")
 
     def sync(self, source):
         if source == "系统时间":
             self.offset = 0.0
             self.name = source
             return 0.0
+
+        if source == "北京时间":
+            self.offset = self._sync_ntp()
+            self.name = source
+            return self.offset
 
         start_wall = time.time()
         start_mono = time.perf_counter()
@@ -141,7 +179,10 @@ class App(tk.Tk):
 
         ttk.Label(box, text="时间源").grid(row=1, column=0, sticky="w", pady=6)
         self.source = ttk.Combobox(
-            box, state="readonly", width=18, values=("系统时间", "淘宝时间", "饿了么时间")
+            box,
+            state="readonly",
+            width=18,
+            values=("系统时间", "北京时间", "淘宝时间", "饿了么时间"),
         )
         self.source.set("系统时间")
         self.source.grid(row=1, column=1, sticky="w")
@@ -311,7 +352,7 @@ class App(tk.Tk):
             return
         try:
             target = datetime.strptime(self.configured_start_time, "%Y-%m-%d %H:%M:%S.%f")
-            target = target.replace(tzinfo=datetime.now().astimezone().tzinfo).timestamp()
+            target = target.replace(tzinfo=self.time_source.tzinfo).timestamp()
             adjust_ms = int(self.adjust_ms.get())
             interval = int(self.interval.get())
             count = int(self.count.get())
