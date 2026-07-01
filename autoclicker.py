@@ -121,6 +121,7 @@ class App(tk.Tk):
         self.geometry("600x580")
         self.resizable(False, False)
         self.time_source = TimeSource()
+        self.configured_start_time = None
         self.events = queue.Queue()
         self.engine = ClickEngine(lambda text: self.events.put(("status", text)))
         self._build()
@@ -152,7 +153,9 @@ class App(tk.Tk):
 
         ttk.Label(box, text="开始时间").grid(row=3, column=0, sticky="w", pady=6)
         self.start_value = tk.StringVar()
-        ttk.Entry(box, textvariable=self.start_value, width=26).grid(row=3, column=1, sticky="w")
+        start_entry = ttk.Entry(box, textvariable=self.start_value, width=26)
+        start_entry.grid(row=3, column=1, sticky="w")
+        start_entry.bind("<KeyRelease>", self._mark_time_unsaved)
         ttk.Label(box, text="YYYY-MM-DD HH:MM:SS.mmm").grid(row=3, column=2, sticky="w")
 
         ttk.Label(box, text="时间记录").grid(row=4, column=0, sticky="w", pady=6)
@@ -162,7 +165,7 @@ class App(tk.Tk):
         self.saved_time_box.bind("<<ComboboxSelected>>", self._choose_saved_time)
         saved_buttons = ttk.Frame(box)
         saved_buttons.grid(row=4, column=2, sticky="w")
-        ttk.Button(saved_buttons, text="保存", width=6, command=self.save_current_time).pack(side="left")
+        ttk.Button(saved_buttons, text="保存并采用", width=10, command=self.save_current_time).pack(side="left")
         ttk.Button(saved_buttons, text="删除", width=6, command=self.delete_saved_time).pack(
             side="left", padx=(6, 0)
         )
@@ -225,14 +228,26 @@ class App(tk.Tk):
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"保存时间记录失败：{exc}")
 
-    def save_current_time(self, quiet=False):
+    @staticmethod
+    def _normalize_time(value):
+        value = value.strip()
+        for time_format in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                parsed = datetime.strptime(value, time_format)
+                return parsed.strftime("%Y-%m-%d %H:%M:%S.") + f"{parsed.microsecond // 1000:03d}"
+            except ValueError:
+                continue
+        raise ValueError
+
+    def save_current_time(self):
         value = self.start_value.get().strip()
         try:
-            datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f")
+            value = self._normalize_time(value)
         except ValueError:
-            if not quiet:
-                messagebox.showerror(APP_NAME, "开始时间格式不正确，无法保存。")
+            messagebox.showerror(APP_NAME, "开始时间格式不正确，无法保存。")
             return
+        self.start_value.set(value)
+        self.configured_start_time = value
         if value in self.saved_times:
             self.saved_times.remove(value)
         self.saved_times.insert(0, value)
@@ -240,13 +255,15 @@ class App(tk.Tk):
         self.saved_time_box["values"] = self.saved_times
         self.saved_time_box.set(value)
         self._write_saved_times()
-        if not quiet:
-            self.status.set("已保存开始时间")
+        self.status.set(f"已保存并采用：{value}")
 
     def delete_saved_time(self):
         value = self.saved_time_box.get()
         if value in self.saved_times:
             self.saved_times.remove(value)
+            if self.configured_start_time == value:
+                self.configured_start_time = None
+                self.start_value.set("")
             self.saved_time_box["values"] = self.saved_times
             self.saved_time_box.set("")
             self._write_saved_times()
@@ -256,6 +273,13 @@ class App(tk.Tk):
         value = self.saved_time_box.get()
         if value:
             self.start_value.set(value)
+            self.configured_start_time = value
+            self.status.set(f"已采用时间记录：{value}")
+
+    def _mark_time_unsaved(self, _event=None):
+        self.configured_start_time = None
+        self.saved_time_box.set("")
+        self.status.set("开始时间已修改，请点击“保存并采用”")
 
     def _set_default_time(self):
         future = self.time_source.now() + timedelta(seconds=10)
@@ -282,8 +306,11 @@ class App(tk.Tk):
         if self.engine.running:
             self.stop()
             return
+        if not self.configured_start_time:
+            messagebox.showerror(APP_NAME, "请先点击“保存并采用”，确认开始时间。")
+            return
         try:
-            target = datetime.strptime(self.start_value.get().strip(), "%Y-%m-%d %H:%M:%S.%f")
+            target = datetime.strptime(self.configured_start_time, "%Y-%m-%d %H:%M:%S.%f")
             target = target.replace(tzinfo=datetime.now().astimezone().tzinfo).timestamp()
             adjust_ms = int(self.adjust_ms.get())
             interval = int(self.interval.get())
@@ -297,7 +324,6 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showerror(APP_NAME, "请检查开始时间、启动偏移、点击间隔和点击次数。")
             return
-        self.save_current_time(quiet=True)
         self.engine.start(target, self.time_source.offset, interval, count, self.position)
 
     def capture_delayed(self):
