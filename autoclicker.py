@@ -1,6 +1,7 @@
 import ctypes
 import ctypes.wintypes
 import json
+import os
 import queue
 import threading
 import time
@@ -12,6 +13,8 @@ from tkinter import messagebox, ttk
 
 
 APP_NAME = "定时连点器"
+CONFIG_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "TimedAutoClicker")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "settings.json")
 WM_HOTKEY = 0x0312
 VK_F8 = 0x77
 VK_F7 = 0x76
@@ -115,12 +118,13 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("580x530")
+        self.geometry("600x580")
         self.resizable(False, False)
         self.time_source = TimeSource()
         self.events = queue.Queue()
         self.engine = ClickEngine(lambda text: self.events.put(("status", text)))
         self._build()
+        self._load_saved_times()
         self._set_default_time()
         self.after(50, self._poll)
         self.after(100, self._tick)
@@ -151,9 +155,21 @@ class App(tk.Tk):
         ttk.Entry(box, textvariable=self.start_value, width=26).grid(row=3, column=1, sticky="w")
         ttk.Label(box, text="YYYY-MM-DD HH:MM:SS.mmm").grid(row=3, column=2, sticky="w")
 
-        ttk.Label(box, text="启动偏移").grid(row=4, column=0, sticky="w", pady=6)
+        ttk.Label(box, text="时间记录").grid(row=4, column=0, sticky="w", pady=6)
+        self.saved_times = []
+        self.saved_time_box = ttk.Combobox(box, state="readonly", width=25)
+        self.saved_time_box.grid(row=4, column=1, sticky="w")
+        self.saved_time_box.bind("<<ComboboxSelected>>", self._choose_saved_time)
+        saved_buttons = ttk.Frame(box)
+        saved_buttons.grid(row=4, column=2, sticky="w")
+        ttk.Button(saved_buttons, text="保存", width=6, command=self.save_current_time).pack(side="left")
+        ttk.Button(saved_buttons, text="删除", width=6, command=self.delete_saved_time).pack(
+            side="left", padx=(6, 0)
+        )
+
+        ttk.Label(box, text="启动偏移").grid(row=5, column=0, sticky="w", pady=6)
         adjust_box = ttk.Frame(box)
-        adjust_box.grid(row=4, column=1, sticky="w")
+        adjust_box.grid(row=5, column=1, sticky="w")
         self.adjust_mode = ttk.Combobox(
             adjust_box, state="readonly", width=7, values=("不调整", "提前", "延后")
         )
@@ -161,36 +177,85 @@ class App(tk.Tk):
         self.adjust_mode.pack(side="left")
         self.adjust_ms = tk.StringVar(value="0")
         ttk.Entry(adjust_box, textvariable=self.adjust_ms, width=9).pack(side="left", padx=(8, 0))
-        ttk.Label(box, text="毫秒").grid(row=4, column=2, sticky="w")
+        ttk.Label(box, text="毫秒").grid(row=5, column=2, sticky="w")
 
-        ttk.Label(box, text="点击间隔").grid(row=5, column=0, sticky="w", pady=6)
+        ttk.Label(box, text="点击间隔").grid(row=6, column=0, sticky="w", pady=6)
         self.interval = tk.StringVar(value="100")
-        ttk.Entry(box, textvariable=self.interval, width=12).grid(row=5, column=1, sticky="w")
-        ttk.Label(box, text="毫秒（建议 ≥ 10）").grid(row=5, column=2, sticky="w")
+        ttk.Entry(box, textvariable=self.interval, width=12).grid(row=6, column=1, sticky="w")
+        ttk.Label(box, text="毫秒（建议 ≥ 10）").grid(row=6, column=2, sticky="w")
 
-        ttk.Label(box, text="点击次数").grid(row=6, column=0, sticky="w", pady=6)
+        ttk.Label(box, text="点击次数").grid(row=7, column=0, sticky="w", pady=6)
         self.count = tk.StringVar(value="0")
-        ttk.Entry(box, textvariable=self.count, width=12).grid(row=6, column=1, sticky="w")
-        ttk.Label(box, text="0 表示一直点击").grid(row=6, column=2, sticky="w")
+        ttk.Entry(box, textvariable=self.count, width=12).grid(row=7, column=1, sticky="w")
+        ttk.Label(box, text="0 表示一直点击").grid(row=7, column=2, sticky="w")
 
-        ttk.Label(box, text="目标位置").grid(row=7, column=0, sticky="w", pady=6)
+        ttk.Label(box, text="目标位置").grid(row=8, column=0, sticky="w", pady=6)
         self.position = None
         self.position_text = tk.StringVar(value="尚未记录（点击时不自动移动）")
-        ttk.Label(box, textvariable=self.position_text).grid(row=7, column=1, sticky="w")
-        ttk.Button(box, text="3 秒后记录", command=self.capture_delayed).grid(row=7, column=2, padx=8)
+        ttk.Label(box, textvariable=self.position_text).grid(row=8, column=1, sticky="w")
+        ttk.Button(box, text="3 秒后记录", command=self.capture_delayed).grid(row=8, column=2, padx=8)
 
-        ttk.Separator(box).grid(row=8, column=0, columnspan=3, sticky="ew", pady=15)
+        ttk.Separator(box).grid(row=9, column=0, columnspan=3, sticky="ew", pady=15)
         self.status = tk.StringVar(value="就绪")
         ttk.Label(box, textvariable=self.status, font=("Microsoft YaHei UI", 11, "bold")).grid(
-            row=9, column=0, columnspan=3, sticky="w"
+            row=10, column=0, columnspan=3, sticky="w"
         )
         button_row = ttk.Frame(box)
-        button_row.grid(row=10, column=0, columnspan=3, sticky="w", pady=14)
+        button_row.grid(row=11, column=0, columnspan=3, sticky="w", pady=14)
         ttk.Button(button_row, text="开始 / 等待", command=self.start, width=16).pack(side="left")
         ttk.Button(button_row, text="停止", command=self.stop, width=12).pack(side="left", padx=10)
         ttk.Label(box, text="F7：记录鼠标位置 · F8：开始或紧急停止").grid(
-            row=11, column=0, columnspan=3, sticky="w"
+            row=12, column=0, columnspan=3, sticky="w"
         )
+
+    def _load_saved_times(self):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            self.saved_times = [str(value) for value in data.get("saved_times", [])][:20]
+        except (OSError, ValueError, TypeError):
+            self.saved_times = []
+        self.saved_time_box["values"] = self.saved_times
+
+    def _write_saved_times(self):
+        try:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            with open(CONFIG_FILE, "w", encoding="utf-8") as file:
+                json.dump({"saved_times": self.saved_times}, file, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            messagebox.showerror(APP_NAME, f"保存时间记录失败：{exc}")
+
+    def save_current_time(self, quiet=False):
+        value = self.start_value.get().strip()
+        try:
+            datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f")
+        except ValueError:
+            if not quiet:
+                messagebox.showerror(APP_NAME, "开始时间格式不正确，无法保存。")
+            return
+        if value in self.saved_times:
+            self.saved_times.remove(value)
+        self.saved_times.insert(0, value)
+        self.saved_times = self.saved_times[:20]
+        self.saved_time_box["values"] = self.saved_times
+        self.saved_time_box.set(value)
+        self._write_saved_times()
+        if not quiet:
+            self.status.set("已保存开始时间")
+
+    def delete_saved_time(self):
+        value = self.saved_time_box.get()
+        if value in self.saved_times:
+            self.saved_times.remove(value)
+            self.saved_time_box["values"] = self.saved_times
+            self.saved_time_box.set("")
+            self._write_saved_times()
+            self.status.set("已删除时间记录")
+
+    def _choose_saved_time(self, _event=None):
+        value = self.saved_time_box.get()
+        if value:
+            self.start_value.set(value)
 
     def _set_default_time(self):
         future = self.time_source.now() + timedelta(seconds=10)
@@ -232,6 +297,7 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showerror(APP_NAME, "请检查开始时间、启动偏移、点击间隔和点击次数。")
             return
+        self.save_current_time(quiet=True)
         self.engine.start(target, self.time_source.offset, interval, count, self.position)
 
     def capture_delayed(self):
