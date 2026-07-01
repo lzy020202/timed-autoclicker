@@ -14,6 +14,7 @@ from tkinter import messagebox, ttk
 APP_NAME = "定时连点器"
 WM_HOTKEY = 0x0312
 VK_F8 = 0x77
+VK_F7 = 0x76
 MOD_NOREPEAT = 0x4000
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
@@ -68,13 +69,13 @@ class ClickEngine:
     def running(self):
         return bool(self.thread and self.thread.is_alive())
 
-    def start(self, target_timestamp, offset, interval_ms, count):
+    def start(self, target_timestamp, offset, interval_ms, count, position):
         if self.running:
             return
         self.stop_event.clear()
         self.thread = threading.Thread(
             target=self._run,
-            args=(target_timestamp, offset, interval_ms / 1000.0, count),
+            args=(target_timestamp, offset, interval_ms / 1000.0, count, position),
             daemon=True,
         )
         self.thread.start()
@@ -82,7 +83,7 @@ class ClickEngine:
     def stop(self):
         self.stop_event.set()
 
-    def _run(self, target_timestamp, offset, interval, count):
+    def _run(self, target_timestamp, offset, interval, count, position):
         self.status_callback("等待开始")
         while not self.stop_event.is_set():
             remaining = target_timestamp - (time.time() + offset)
@@ -94,6 +95,8 @@ class ClickEngine:
             self.status_callback("已停止")
             return
 
+        if position is not None:
+            ctypes.windll.user32.SetCursorPos(position[0], position[1])
         self.status_callback("正在连点")
         done = 0
         next_click = time.perf_counter()
@@ -112,7 +115,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("530x430")
+        self.geometry("560x485")
         self.resizable(False, False)
         self.time_source = TimeSource()
         self.events = queue.Queue()
@@ -158,17 +161,23 @@ class App(tk.Tk):
         ttk.Entry(box, textvariable=self.count, width=12).grid(row=5, column=1, sticky="w")
         ttk.Label(box, text="0 表示一直点击").grid(row=5, column=2, sticky="w")
 
-        ttk.Separator(box).grid(row=6, column=0, columnspan=3, sticky="ew", pady=15)
+        ttk.Label(box, text="目标位置").grid(row=6, column=0, sticky="w", pady=6)
+        self.position = None
+        self.position_text = tk.StringVar(value="尚未记录（点击时不自动移动）")
+        ttk.Label(box, textvariable=self.position_text).grid(row=6, column=1, sticky="w")
+        ttk.Button(box, text="3 秒后记录", command=self.capture_delayed).grid(row=6, column=2, padx=8)
+
+        ttk.Separator(box).grid(row=7, column=0, columnspan=3, sticky="ew", pady=15)
         self.status = tk.StringVar(value="就绪")
         ttk.Label(box, textvariable=self.status, font=("Microsoft YaHei UI", 11, "bold")).grid(
-            row=7, column=0, columnspan=3, sticky="w"
+            row=8, column=0, columnspan=3, sticky="w"
         )
         button_row = ttk.Frame(box)
-        button_row.grid(row=8, column=0, columnspan=3, sticky="w", pady=14)
+        button_row.grid(row=9, column=0, columnspan=3, sticky="w", pady=14)
         ttk.Button(button_row, text="开始 / 等待", command=self.start, width=16).pack(side="left")
         ttk.Button(button_row, text="停止", command=self.stop, width=12).pack(side="left", padx=10)
-        ttk.Label(box, text="F8：开始或紧急停止 · 点击位置为鼠标当前所在位置").grid(
-            row=9, column=0, columnspan=3, sticky="w"
+        ttk.Label(box, text="F7：记录鼠标位置 · F8：开始或紧急停止").grid(
+            row=10, column=0, columnspan=3, sticky="w"
         )
 
     def _set_default_time(self):
@@ -206,7 +215,20 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showerror(APP_NAME, "请检查开始时间、点击间隔和点击次数。")
             return
-        self.engine.start(target, self.time_source.offset, interval, count)
+        self.engine.start(target, self.time_source.offset, interval, count, self.position)
+
+    def capture_delayed(self):
+        self.status.set("请在 3 秒内把鼠标移到目标位置…")
+        self.after(3000, self.capture_position)
+
+    def capture_position(self):
+        point = ctypes.wintypes.POINT()
+        if not ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+            messagebox.showerror(APP_NAME, "无法读取当前鼠标位置。")
+            return
+        self.position = (point.x, point.y)
+        self.position_text.set(f"X: {point.x}   Y: {point.y}")
+        self.status.set("已记录鼠标位置")
 
     def stop(self):
         self.engine.stop()
@@ -222,6 +244,8 @@ class App(tk.Tk):
                     self.status.set(f"已同步{event[1]}，偏差 {event[2] * 1000:+.0f} ms")
                 elif event[0] == "hotkey":
                     self.stop() if self.engine.running else self.start()
+                elif event[0] == "capture":
+                    self.capture_position()
                 else:
                     self.status.set("校时失败")
                     messagebox.showerror(APP_NAME, event[1])
@@ -231,14 +255,23 @@ class App(tk.Tk):
 
     def _hotkey_loop(self):
         user32 = ctypes.windll.user32
-        if not user32.RegisterHotKey(None, 1, MOD_NOREPEAT, VK_F8):
+        f8_ok = user32.RegisterHotKey(None, 1, MOD_NOREPEAT, VK_F8)
+        f7_ok = user32.RegisterHotKey(None, 2, MOD_NOREPEAT, VK_F7)
+        if not f8_ok:
             self.events.put(("error", "F8 全局热键注册失败，可能已被其他程序占用。"))
-            return
+        if not f7_ok:
+            self.events.put(("error", "F7 全局热键注册失败，仍可使用“3 秒后记录”。"))
         msg = ctypes.wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
             if msg.message == WM_HOTKEY:
-                self.events.put(("hotkey",))
-        user32.UnregisterHotKey(None, 1)
+                if msg.wParam == 1:
+                    self.events.put(("hotkey",))
+                elif msg.wParam == 2:
+                    self.events.put(("capture",))
+        if f8_ok:
+            user32.UnregisterHotKey(None, 1)
+        if f7_ok:
+            user32.UnregisterHotKey(None, 2)
 
     def _close(self):
         self.engine.stop()
