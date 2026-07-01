@@ -115,7 +115,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("560x485")
+        self.geometry("580x530")
         self.resizable(False, False)
         self.time_source = TimeSource()
         self.events = queue.Queue()
@@ -151,33 +151,45 @@ class App(tk.Tk):
         ttk.Entry(box, textvariable=self.start_value, width=26).grid(row=3, column=1, sticky="w")
         ttk.Label(box, text="YYYY-MM-DD HH:MM:SS.mmm").grid(row=3, column=2, sticky="w")
 
-        ttk.Label(box, text="点击间隔").grid(row=4, column=0, sticky="w", pady=6)
+        ttk.Label(box, text="启动偏移").grid(row=4, column=0, sticky="w", pady=6)
+        adjust_box = ttk.Frame(box)
+        adjust_box.grid(row=4, column=1, sticky="w")
+        self.adjust_mode = ttk.Combobox(
+            adjust_box, state="readonly", width=7, values=("不调整", "提前", "延后")
+        )
+        self.adjust_mode.set("不调整")
+        self.adjust_mode.pack(side="left")
+        self.adjust_ms = tk.StringVar(value="0")
+        ttk.Entry(adjust_box, textvariable=self.adjust_ms, width=9).pack(side="left", padx=(8, 0))
+        ttk.Label(box, text="毫秒").grid(row=4, column=2, sticky="w")
+
+        ttk.Label(box, text="点击间隔").grid(row=5, column=0, sticky="w", pady=6)
         self.interval = tk.StringVar(value="100")
-        ttk.Entry(box, textvariable=self.interval, width=12).grid(row=4, column=1, sticky="w")
-        ttk.Label(box, text="毫秒（建议 ≥ 10）").grid(row=4, column=2, sticky="w")
+        ttk.Entry(box, textvariable=self.interval, width=12).grid(row=5, column=1, sticky="w")
+        ttk.Label(box, text="毫秒（建议 ≥ 10）").grid(row=5, column=2, sticky="w")
 
-        ttk.Label(box, text="点击次数").grid(row=5, column=0, sticky="w", pady=6)
+        ttk.Label(box, text="点击次数").grid(row=6, column=0, sticky="w", pady=6)
         self.count = tk.StringVar(value="0")
-        ttk.Entry(box, textvariable=self.count, width=12).grid(row=5, column=1, sticky="w")
-        ttk.Label(box, text="0 表示一直点击").grid(row=5, column=2, sticky="w")
+        ttk.Entry(box, textvariable=self.count, width=12).grid(row=6, column=1, sticky="w")
+        ttk.Label(box, text="0 表示一直点击").grid(row=6, column=2, sticky="w")
 
-        ttk.Label(box, text="目标位置").grid(row=6, column=0, sticky="w", pady=6)
+        ttk.Label(box, text="目标位置").grid(row=7, column=0, sticky="w", pady=6)
         self.position = None
         self.position_text = tk.StringVar(value="尚未记录（点击时不自动移动）")
-        ttk.Label(box, textvariable=self.position_text).grid(row=6, column=1, sticky="w")
-        ttk.Button(box, text="3 秒后记录", command=self.capture_delayed).grid(row=6, column=2, padx=8)
+        ttk.Label(box, textvariable=self.position_text).grid(row=7, column=1, sticky="w")
+        ttk.Button(box, text="3 秒后记录", command=self.capture_delayed).grid(row=7, column=2, padx=8)
 
-        ttk.Separator(box).grid(row=7, column=0, columnspan=3, sticky="ew", pady=15)
+        ttk.Separator(box).grid(row=8, column=0, columnspan=3, sticky="ew", pady=15)
         self.status = tk.StringVar(value="就绪")
         ttk.Label(box, textvariable=self.status, font=("Microsoft YaHei UI", 11, "bold")).grid(
-            row=8, column=0, columnspan=3, sticky="w"
+            row=9, column=0, columnspan=3, sticky="w"
         )
         button_row = ttk.Frame(box)
-        button_row.grid(row=9, column=0, columnspan=3, sticky="w", pady=14)
+        button_row.grid(row=10, column=0, columnspan=3, sticky="w", pady=14)
         ttk.Button(button_row, text="开始 / 等待", command=self.start, width=16).pack(side="left")
         ttk.Button(button_row, text="停止", command=self.stop, width=12).pack(side="left", padx=10)
         ttk.Label(box, text="F7：记录鼠标位置 · F8：开始或紧急停止").grid(
-            row=10, column=0, columnspan=3, sticky="w"
+            row=11, column=0, columnspan=3, sticky="w"
         )
 
     def _set_default_time(self):
@@ -208,12 +220,17 @@ class App(tk.Tk):
         try:
             target = datetime.strptime(self.start_value.get().strip(), "%Y-%m-%d %H:%M:%S.%f")
             target = target.replace(tzinfo=datetime.now().astimezone().tzinfo).timestamp()
+            adjust_ms = int(self.adjust_ms.get())
             interval = int(self.interval.get())
             count = int(self.count.get())
-            if interval < 1 or count < 0:
+            if adjust_ms < 0 or interval < 1 or count < 0:
                 raise ValueError
+            if self.adjust_mode.get() == "提前":
+                target -= adjust_ms / 1000.0
+            elif self.adjust_mode.get() == "延后":
+                target += adjust_ms / 1000.0
         except ValueError:
-            messagebox.showerror(APP_NAME, "请检查开始时间、点击间隔和点击次数。")
+            messagebox.showerror(APP_NAME, "请检查开始时间、启动偏移、点击间隔和点击次数。")
             return
         self.engine.start(target, self.time_source.offset, interval, count, self.position)
 
